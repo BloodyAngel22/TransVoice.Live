@@ -56,7 +56,8 @@ public class LiveCommand : AsyncCommand<LiveCommand.Settings>
         const int ChunkBytes = ChunkSize * BytesPerSample;
         const int SilenceTimeoutMs = 1000;
         const int MaxPhraseDurationMs = 20000;
-        const string InitialPunctuationPrompt = "Транскрипция русской речи. В тексте должны быть правильно расставлены запятые, точки, тире и другие знаки препинания. Например: Мы продолжаем работу над проектом, чтобы добиться наилучшего качества.";
+        const string InitialPunctuationPrompt =
+            "Транскрипция русской речи. В тексте должны быть правильно расставлены запятые, точки, тире и другие знаки препинания. Например: Мы продолжаем работу над проектом, чтобы добиться наилучшего качества.";
 
         var finalChannel = Channel.CreateUnbounded<float[]>();
         var previewChannel = Channel.CreateBounded<float[]>(
@@ -64,15 +65,20 @@ public class LiveCommand : AsyncCommand<LiveCommand.Settings>
         );
 
         StringBuilder fullHistory = new StringBuilder();
-        bool isProcessingFinal = false;
         CancellationTokenSource? previewCts = null;
+        CancellationTokenSource? waitCts = null;
+        CancellationTokenSource? processingCts = null;
+        bool isWaiting = false;
         SemaphoreSlim whisperSemaphore = new SemaphoreSlim(1, 1);
 
         using var rawPipe = _audioStreamer.StartStreaming();
 
-        _ = Task.Run(async () =>
+        var finalWorkerTask = Task.Run(async () =>
         {
-            var continuationRegex = new Regex(@"^(и|а|но|что|когда|если|потому|так как|который|где|куда|зачем|почему)\b", RegexOptions.IgnoreCase);
+            var continuationRegex = new Regex(
+                @"^(и|а|но|что|когда|если|потому|так как|который|где|куда|зачем|почему)\b",
+                RegexOptions.IgnoreCase
+            );
 
             try
             {
@@ -81,7 +87,6 @@ public class LiveCommand : AsyncCommand<LiveCommand.Settings>
                     await whisperSemaphore.WaitAsync();
                     try
                     {
-                        isProcessingFinal = true;
                         previewCts?.Cancel();
                         _audioProcessor.Normalize(samples);
 
@@ -92,7 +97,10 @@ public class LiveCommand : AsyncCommand<LiveCommand.Settings>
                             if (fullHistory.Length > 0)
                             {
                                 int start = Math.Max(0, fullHistory.Length - 400);
-                                prompt = InitialPunctuationPrompt + " " + fullHistory.ToString(start, fullHistory.Length - start);
+                                prompt =
+                                    InitialPunctuationPrompt
+                                    + " "
+                                    + fullHistory.ToString(start, fullHistory.Length - start);
                             }
                         }
 
@@ -103,7 +111,12 @@ public class LiveCommand : AsyncCommand<LiveCommand.Settings>
 
                         var swWork = Stopwatch.StartNew();
                         var resultText = new StringBuilder();
-                        await foreach (var segment in processor.ProcessAsync(samples))
+                        await foreach (
+                            var segment in processor.ProcessAsync(
+                                samples,
+                                processingCts?.Token ?? CancellationToken.None
+                            )
+                        )
                         {
                             resultText.Append(segment.Text);
                         }
@@ -133,14 +146,21 @@ public class LiveCommand : AsyncCommand<LiveCommand.Settings>
                                 {
                                     bool isContinuation = false;
                                     string currentHistory = fullHistory.ToString().TrimEnd();
-                                    
+
                                     if (currentHistory.Length > 0)
                                     {
                                         bool startsWithLower = char.IsLower(finalLine[0]);
-                                        bool lastEndedWithoutPunct = !Regex.IsMatch(currentHistory, @"[\.\!\?\u2026]$");
+                                        bool lastEndedWithoutPunct = !Regex.IsMatch(
+                                            currentHistory,
+                                            @"[\.\!\?\u2026]$"
+                                        );
                                         bool isConjunction = continuationRegex.IsMatch(finalLine);
 
-                                        if (startsWithLower || isConjunction || lastEndedWithoutPunct)
+                                        if (
+                                            startsWithLower
+                                            || isConjunction
+                                            || lastEndedWithoutPunct
+                                        )
                                         {
                                             isContinuation = true;
                                         }
@@ -149,7 +169,11 @@ public class LiveCommand : AsyncCommand<LiveCommand.Settings>
                                     if (isContinuation)
                                     {
                                         // Remove trailing dots from history if appending continuation
-                                        var cleanedHistory = Regex.Replace(currentHistory, @"\.+$", "");
+                                        var cleanedHistory = Regex.Replace(
+                                            currentHistory,
+                                            @"\.+$",
+                                            ""
+                                        );
                                         fullHistory.Clear();
                                         fullHistory.Append(cleanedHistory);
                                         fullHistory.Append(" " + finalLine);
@@ -164,7 +188,6 @@ public class LiveCommand : AsyncCommand<LiveCommand.Settings>
                     }
                     finally
                     {
-                        isProcessingFinal = false;
                         whisperSemaphore.Release();
                     }
                 }
@@ -176,10 +199,10 @@ public class LiveCommand : AsyncCommand<LiveCommand.Settings>
         {
             await foreach (var samples in previewChannel.Reader.ReadAllAsync())
             {
-                if (isProcessingFinal || finalChannel.Reader.Count > 0)
+                if (whisperSemaphore.CurrentCount == 0 || finalChannel.Reader.Count > 0)
                     continue;
                 await Task.Delay(300);
-                if (isProcessingFinal || finalChannel.Reader.Count > 0)
+                if (whisperSemaphore.CurrentCount == 0 || finalChannel.Reader.Count > 0)
                     continue;
 
                 previewCts = new CancellationTokenSource();
@@ -189,9 +212,7 @@ public class LiveCommand : AsyncCommand<LiveCommand.Settings>
                 try
                 {
                     _audioProcessor.Normalize(samples);
-                    using var processor = _whisperEngine
-                        .GetProcessorBuilder()
-                        .Build();
+                    using var processor = _whisperEngine.GetProcessorBuilder().Build();
                     var sw = Stopwatch.StartNew();
                     var resultText = new StringBuilder();
                     await foreach (var segment in processor.ProcessAsync(samples, previewCts.Token))
@@ -258,104 +279,221 @@ public class LiveCommand : AsyncCommand<LiveCommand.Settings>
         float stopThr = medianBackground * 1.6f + 0.0005f;
         Console.WriteLine($"\nКалибровка завершена. (Шум: {medianBackground:F5})");
 
-        while (true)
+        bool exitLoop = false;
+        bool processingTimedOut = false;
+        bool processingCancelled = false;
+
+        while (!exitLoop)
         {
             if (Console.KeyAvailable && Console.ReadKey(true).Key == ConsoleKey.Enter)
-                break;
-
-            int bytesRead = 0;
-            while (bytesRead < ChunkBytes)
             {
-                int r = await rawPipe.ReadAsync(byteBuffer, bytesRead, ChunkBytes - bytesRead);
-                if (r <= 0)
+                if (isWaiting)
+                {
+                    waitCts?.Cancel();
+                    processingCts?.Cancel();
+                    processingCancelled = true;
                     break;
-                bytesRead += r;
-            }
-
-            var currentChunk = new float[ChunkSize];
-            var (rawRms, processedRms) = _audioProcessor.ProcessChunk(
-                byteBuffer,
-                currentChunk,
-                ChunkSize,
-                isSpeaking
-            );
-
-            if (!isSpeaking)
-            {
-                // Dynamic Background Adaptation - always running while IDLE
-                if (rawRms < startThr * 0.7f)
-                {
-                    medianBackground = medianBackground * 0.98f + rawRms * 0.02f;
-                    _audioProcessor.UpdateNoiseRMS(medianBackground);
-                    
-                    // SNR-based thresholds
-                    startThr = medianBackground * 2.8f + 0.001f;
-                    stopThr = medianBackground * 1.6f + 0.0005f;
-                }
-
-                if (rawRms > startThr)
-                {
-                    isSpeaking = true;
-                    silenceSamplesCount = 0;
-                    while (preRollBuffer.Count > 0)
-                        audioBuffer.AddRange(preRollBuffer.Dequeue());
-                    audioBuffer.AddRange(currentChunk);
                 }
                 else
                 {
-                    preRollBuffer.Enqueue(currentChunk);
-                    if (preRollBuffer.Count > 8)
-                        preRollBuffer.Dequeue();
+                    isWaiting = true;
+                    waitCts = new CancellationTokenSource();
+                    processingCts = new CancellationTokenSource();
+
+                    if (audioBuffer.Count > 0)
+                        finalChannel.Writer.TryWrite(audioBuffer.ToArray());
+
+                    finalChannel.Writer.Complete();
+                    previewChannel.Writer.Complete();
+
+                    try
+                    {
+                        bool workerTimedOut = false;
+
+                        await AnsiConsole
+                            .Status()
+                            .Spinner(Spinner.Known.Dots)
+                            .SpinnerStyle(Style.Parse("yellow"))
+                            .StartAsync(
+                                "⏳ Ожидание завершения расшифровки...",
+                                async ctx =>
+                                {
+                                    var timeoutTask = Task.Delay(TimeSpan.FromSeconds(60));
+                                    var completedTask = await Task.WhenAny(
+                                        finalWorkerTask,
+                                        timeoutTask
+                                    );
+
+                                    if (completedTask == timeoutTask)
+                                    {
+                                        ctx.Status("⚠ Расшифровка зависла, прерываем...");
+                                        workerTimedOut = true;
+                                        processingCts.Cancel();
+                                        await Task.Delay(1000);
+                                    }
+                                    else
+                                    {
+                                        ctx.Status("✅ Расшифровка завершена");
+                                    }
+                                }
+                            );
+
+                        if (workerTimedOut)
+                            processingTimedOut = true;
+
+                        previewCts?.Cancel();
+
+                        exitLoop = true;
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        processingCancelled = true;
+                        break;
+                    }
                 }
+            }
+
+            if (!isWaiting)
+            {
+                int bytesRead = 0;
+                while (bytesRead < ChunkBytes)
+                {
+                    int r = await rawPipe.ReadAsync(byteBuffer, bytesRead, ChunkBytes - bytesRead);
+                    if (r <= 0)
+                        break;
+                    bytesRead += r;
+                }
+
+                var currentChunk = new float[ChunkSize];
+                var (rawRms, processedRms) = _audioProcessor.ProcessChunk(
+                    byteBuffer,
+                    currentChunk,
+                    ChunkSize,
+                    isSpeaking
+                );
+
+                if (!isSpeaking)
+                {
+                    // Dynamic Background Adaptation - always running while IDLE
+                    if (rawRms < startThr * 0.7f)
+                    {
+                        medianBackground = medianBackground * 0.98f + rawRms * 0.02f;
+                        _audioProcessor.UpdateNoiseRMS(medianBackground);
+
+                        // SNR-based thresholds
+                        startThr = medianBackground * 2.8f + 0.001f;
+                        stopThr = medianBackground * 1.6f + 0.0005f;
+                    }
+
+                    if (rawRms > startThr)
+                    {
+                        isSpeaking = true;
+                        silenceSamplesCount = 0;
+                        while (preRollBuffer.Count > 0)
+                            audioBuffer.AddRange(preRollBuffer.Dequeue());
+                        audioBuffer.AddRange(currentChunk);
+                    }
+                    else
+                    {
+                        preRollBuffer.Enqueue(currentChunk);
+                        if (preRollBuffer.Count > 8)
+                            preRollBuffer.Dequeue();
+                    }
+                }
+                else
+                {
+                    audioBuffer.AddRange(currentChunk);
+                    if (
+                        audioBuffer.Count > SampleRate * 2.5
+                        && (DateTime.Now - lastPreviewTime).TotalMilliseconds > 3000
+                    )
+                    {
+                        previewChannel.Writer.TryWrite(audioBuffer.ToArray());
+                        lastPreviewTime = DateTime.Now;
+                    }
+
+                    if (rawRms < stopThr)
+                        silenceSamplesCount += ChunkDurationMs;
+                    else
+                        silenceSamplesCount = 0;
+
+                    if (
+                        silenceSamplesCount >= SilenceTimeoutMs
+                        || audioBuffer.Count >= (SampleRate * MaxPhraseDurationMs / 1000)
+                    )
+                    {
+                        if (audioBuffer.Count > SampleRate * 0.4)
+                            finalChannel.Writer.TryWrite(audioBuffer.ToArray());
+                        audioBuffer.Clear();
+                        isSpeaking = false;
+                        silenceSamplesCount = 0;
+                        preRollBuffer.Clear();
+                        lastPreviewTime = DateTime.MinValue;
+                    }
+                }
+
+                string gainStatus = $"Gain: {_audioProcessor.CurrentGain:F1}x";
+
+                float displayValue = isSpeaking ? processedRms : rawRms;
+                int filled = (int)Math.Min(20, (displayValue / (startThr * 1.5f)) * 20);
+                string bar = new string('■', filled).PadRight(20, '·');
+                AnsiConsole.Console.Write("\r\x1b[K");
+                AnsiConsole.Markup(
+                    $"[cyan]{gainStatus}[/] | Mic: [green]{bar}[/] ({displayValue:F4}) | {(isSpeaking ? "[red]● REC[/]" : "[grey]ADAPT [/]")}"
+                );
+            }
+        }
+
+        var fullText = fullHistory.ToString();
+        if (exitLoop && !processingTimedOut && !processingCancelled)
+        {
+            AnsiConsole.WriteLine();
+            AnsiConsole.Write(new Rule("ПОЛНЫЙ ТЕКСТ").Centered().RuleStyle("cyan"));
+            Console.WriteLine(fullText);
+            _clipboardManager.CopyText(fullText);
+            AnsiConsole.MarkupLine("\n[green]✔ Текст скопирован в буфер обмена![/]");
+        }
+        else if (processingTimedOut)
+        {
+            AnsiConsole.WriteLine();
+            AnsiConsole.MarkupLine("[red]❌ Расшифровка зависла и была прервана.[/]");
+            if (!string.IsNullOrWhiteSpace(fullText))
+            {
+                Console.WriteLine(fullText);
+                _clipboardManager.CopyText(fullText);
+                AnsiConsole.MarkupLine("[yellow]⚠ Частичный текст скопирован в буфер обмена.[/]");
             }
             else
             {
-                audioBuffer.AddRange(currentChunk);
-                if (
-                    audioBuffer.Count > SampleRate * 2.5
-                    && (DateTime.Now - lastPreviewTime).TotalMilliseconds > 3000
-                )
-                {
-                    previewChannel.Writer.TryWrite(audioBuffer.ToArray());
-                    lastPreviewTime = DateTime.Now;
-                }
-
-                if (rawRms < stopThr)
-                    silenceSamplesCount += ChunkDurationMs;
-                else
-                    silenceSamplesCount = 0;
-
-                if (
-                    silenceSamplesCount >= SilenceTimeoutMs
-                    || audioBuffer.Count >= (SampleRate * MaxPhraseDurationMs / 1000)
-                )
-                {
-                    if (audioBuffer.Count > SampleRate * 0.4)
-                        finalChannel.Writer.TryWrite(audioBuffer.ToArray());
-                    audioBuffer.Clear();
-                    isSpeaking = false;
-                    silenceSamplesCount = 0;
-                    preRollBuffer.Clear();
-                    lastPreviewTime = DateTime.MinValue;
-                }
+                AnsiConsole.MarkupLine("[yellow]Текст не был расшифрован.[/]");
             }
-
-            string gainStatus = $"Gain: {_audioProcessor.CurrentGain:F1}x";
-
-            float displayValue = isSpeaking ? processedRms : rawRms;
-            int filled = (int)Math.Min(20, (displayValue / (startThr * 1.5f)) * 20);
-            string bar = new string('■', filled).PadRight(20, '·');
-            AnsiConsole.Console.Write("\r\x1b[K");
-            AnsiConsole.Markup(
-                $"[cyan]{gainStatus}[/] | Mic: [green]{bar}[/] ({displayValue:F4}) | {(isSpeaking ? "[red]● REC[/]" : "[grey]ADAPT [/]")}"
-            );
         }
-        AnsiConsole.WriteLine();
-        AnsiConsole.Write(new Rule("ПОЛНЫЙ ТЕКСТ").Centered().RuleStyle("cyan"));
-        var fullText = fullHistory.ToString();
-        Console.WriteLine(fullText);
-        _clipboardManager.CopyText(fullText);
-        AnsiConsole.MarkupLine("\n[green]✔ Текст скопирован в буфер обмена![/]");
+        else if (processingCancelled)
+        {
+            AnsiConsole.WriteLine();
+            AnsiConsole.MarkupLine("[yellow]⚠ Ожидание отменено пользователем.[/]");
+            if (!string.IsNullOrWhiteSpace(fullText))
+            {
+                Console.WriteLine(fullText);
+                _clipboardManager.CopyText(fullText);
+                AnsiConsole.MarkupLine("[green]✔ Текст скопирован в буфер обмена.[/]");
+            }
+            else
+            {
+                AnsiConsole.MarkupLine("[yellow]Текст не был расшифрован.[/]");
+            }
+        }
+        else
+        {
+            AnsiConsole.WriteLine();
+            AnsiConsole.MarkupLine("[yellow]⚠ Завершение в неизвестном состоянии.[/]");
+            if (!string.IsNullOrWhiteSpace(fullText))
+            {
+                Console.WriteLine(fullText);
+                _clipboardManager.CopyText(fullText);
+                AnsiConsole.MarkupLine("[yellow]✔ Текст скопирован в буфер обмена.[/]");
+            }
+        }
 
         return 0;
     }
