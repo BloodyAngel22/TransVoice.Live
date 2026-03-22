@@ -1,5 +1,8 @@
 namespace TransVoice.Live.Core;
 
+/// <summary>
+/// Обработка аудиоданных: шумоподавление, автоматическая регулировка усиления, нормализация.
+/// </summary>
 public class AudioProcessor
 {
     private float _prevRaw = 0;
@@ -27,7 +30,6 @@ public class AudioProcessor
 
     public void UpdateNoiseRMS(float noiseRMS)
     {
-        // Smoothly update noise floor to avoid sudden jumps in gate
         _noiseRMS = _noiseRMS * 0.8f + noiseRMS * 0.2f;
     }
 
@@ -55,7 +57,6 @@ public class AudioProcessor
 
         float rawRms = (float)Math.Sqrt(sumSq / chunkSize);
 
-        // Noise Gate: if signal is below threshold, zero it out to prevent Whisper hallucinations
         bool isSilencedByGate = !isSpeaking && rawRms < (_noiseRMS * NoiseGateThresholdMultiplier);
 
         if (isSpeaking && rawRms > 0.0001f)
@@ -68,8 +69,7 @@ public class AudioProcessor
         }
         else if (!isSpeaking)
         {
-            // Limit gain growth during silence to prevent noise floor amplification
-            float idleTargetGain = 3.0f; 
+            float idleTargetGain = 3.0f;
             if (_currentGain > idleTargetGain)
                 _currentGain -= 0.5f;
             else if (_currentGain < idleTargetGain)

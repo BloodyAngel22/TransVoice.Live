@@ -3,6 +3,9 @@ using Spectre.Console.Cli;
 
 namespace TransVoice.Live.Infrastructure;
 
+/// <summary>
+/// Адаптер ITypeRegistrar для интеграции Microsoft.Extensions.DependencyInjection с Spectre.Console.
+/// </summary>
 public sealed class TypeRegistrar : ITypeRegistrar
 {
     private readonly IServiceCollection _builder;
@@ -30,6 +33,9 @@ public sealed class TypeRegistrar : ITypeRegistrar
     }
 }
 
+/// <summary>
+/// Адаптер ITypeResolver, разрешающий сервисы из провайдера DI.
+/// </summary>
 public sealed class TypeResolver : ITypeResolver, IDisposable
 {
     private readonly IServiceProvider _provider;

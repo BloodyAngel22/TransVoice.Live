@@ -7,9 +7,14 @@ using Spectre.Console.Cli;
 using TransVoice.Live.Common;
 using TransVoice.Live.Core;
 using TransVoice.Live.Infrastructure;
+using TransVoice.Live.TextProcessing;
 
 namespace TransVoice.Live.Commands;
 
+/// <summary>
+/// Команда потокового распознавания речи в реальном времени.
+/// Захватывает аудио, отправляет в Whisper и копирует результат в буфер обмена.
+/// </summary>
 public class LiveCommand : AsyncCommand<LiveCommand.Settings>
 {
     private readonly AppSettings _appSettings;
@@ -17,6 +22,7 @@ public class LiveCommand : AsyncCommand<LiveCommand.Settings>
     private readonly AudioProcessor _audioProcessor;
     private readonly AudioStreamer _audioStreamer;
     private readonly ClipboardManager _clipboardManager;
+    private readonly ITextProcessor _textProcessor;
 
     public class Settings : CommandSettings { }
 
@@ -25,7 +31,8 @@ public class LiveCommand : AsyncCommand<LiveCommand.Settings>
         WhisperEngine whisperEngine,
         AudioProcessor audioProcessor,
         AudioStreamer audioStreamer,
-        ClipboardManager clipboardManager
+        ClipboardManager clipboardManager,
+        ITextProcessor textProcessor
     )
     {
         _appSettings = appSettings;
@@ -33,6 +40,7 @@ public class LiveCommand : AsyncCommand<LiveCommand.Settings>
         _audioProcessor = audioProcessor;
         _audioStreamer = audioStreamer;
         _clipboardManager = clipboardManager;
+        _textProcessor = textProcessor;
     }
 
     public override async Task<int> ExecuteAsync(
@@ -445,22 +453,24 @@ public class LiveCommand : AsyncCommand<LiveCommand.Settings>
         }
 
         var fullText = fullHistory.ToString();
+        var processedText = _textProcessor.ProcessText(fullText);
+
         if (exitLoop && !processingTimedOut && !processingCancelled)
         {
             AnsiConsole.WriteLine();
             AnsiConsole.Write(new Rule("ПОЛНЫЙ ТЕКСТ").Centered().RuleStyle("cyan"));
-            Console.WriteLine(fullText);
-            _clipboardManager.CopyText(fullText);
+            Console.WriteLine(processedText);
+            _clipboardManager.CopyText(processedText);
             AnsiConsole.MarkupLine("\n[green]✔ Текст скопирован в буфер обмена![/]");
         }
         else if (processingTimedOut)
         {
             AnsiConsole.WriteLine();
             AnsiConsole.MarkupLine("[red]❌ Расшифровка зависла и была прервана.[/]");
-            if (!string.IsNullOrWhiteSpace(fullText))
+            if (!string.IsNullOrWhiteSpace(processedText))
             {
-                Console.WriteLine(fullText);
-                _clipboardManager.CopyText(fullText);
+                Console.WriteLine(processedText);
+                _clipboardManager.CopyText(processedText);
                 AnsiConsole.MarkupLine("[yellow]⚠ Частичный текст скопирован в буфер обмена.[/]");
             }
             else
@@ -472,10 +482,10 @@ public class LiveCommand : AsyncCommand<LiveCommand.Settings>
         {
             AnsiConsole.WriteLine();
             AnsiConsole.MarkupLine("[yellow]⚠ Ожидание отменено пользователем.[/]");
-            if (!string.IsNullOrWhiteSpace(fullText))
+            if (!string.IsNullOrWhiteSpace(processedText))
             {
-                Console.WriteLine(fullText);
-                _clipboardManager.CopyText(fullText);
+                Console.WriteLine(processedText);
+                _clipboardManager.CopyText(processedText);
                 AnsiConsole.MarkupLine("[green]✔ Текст скопирован в буфер обмена.[/]");
             }
             else
@@ -487,10 +497,10 @@ public class LiveCommand : AsyncCommand<LiveCommand.Settings>
         {
             AnsiConsole.WriteLine();
             AnsiConsole.MarkupLine("[yellow]⚠ Завершение в неизвестном состоянии.[/]");
-            if (!string.IsNullOrWhiteSpace(fullText))
+            if (!string.IsNullOrWhiteSpace(processedText))
             {
-                Console.WriteLine(fullText);
-                _clipboardManager.CopyText(fullText);
+                Console.WriteLine(processedText);
+                _clipboardManager.CopyText(processedText);
                 AnsiConsole.MarkupLine("[yellow]✔ Текст скопирован в буфер обмена.[/]");
             }
         }

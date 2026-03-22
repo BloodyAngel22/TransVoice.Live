@@ -6,6 +6,9 @@ using TransVoice.Live.Infrastructure;
 
 namespace TransVoice.Live.Commands;
 
+/// <summary>
+/// Команда интерактивной настройки приложения: выбор модели, языка и количества потоков.
+/// </summary>
 public class SettingsCommand : Command<SettingsCommand.Settings>
 {
     private readonly SettingsManager _settingsManager;

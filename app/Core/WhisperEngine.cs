@@ -3,6 +3,9 @@ using Whisper.net;
 
 namespace TransVoice.Live.Core;
 
+/// <summary>
+/// Обёртка над Whisper.net. Загружает модель и создаёт процессоры для распознавания речи.
+/// </summary>
 public class WhisperEngine : IDisposable
 {
     private WhisperFactory? _factory;

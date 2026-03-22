@@ -2,6 +2,9 @@ using System.Diagnostics;
 
 namespace TransVoice.Live.Infrastructure;
 
+/// <summary>
+/// Потоковый захват аудио с микрофона через утилиту arecord.
+/// </summary>
 public class AudioStreamer : IDisposable
 {
     private Process? _process;

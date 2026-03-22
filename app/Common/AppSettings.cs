@@ -1,5 +1,8 @@
 namespace TransVoice.Live.Common;
 
+/// <summary>
+/// Модель настроек приложения: путь к модели, язык, потоки и статус конфигурации.
+/// </summary>
 public class AppSettings
 {
     public string? ModelPath { get; set; }

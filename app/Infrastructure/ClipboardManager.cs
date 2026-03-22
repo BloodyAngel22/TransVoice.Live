@@ -3,6 +3,9 @@ using System.Text.RegularExpressions;
 
 namespace TransVoice.Live.Infrastructure;
 
+/// <summary>
+/// Копирует текст в системный буфер обмена через утилиту xclip.
+/// </summary>
 public class ClipboardManager
 {
     public void CopyText(string text)

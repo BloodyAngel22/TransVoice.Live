@@ -1,5 +1,8 @@
 namespace TransVoice.Live.Common;
 
+/// <summary>
+/// Определяет корневую директорию приложения (содержащую папку Models).
+/// </summary>
 public static class PathResolver
 {
     private static string? _cachedRoot;

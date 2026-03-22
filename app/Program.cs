@@ -3,9 +3,13 @@ using Spectre.Console.Cli;
 using TransVoice.Live.Commands;
 using TransVoice.Live.Core;
 using TransVoice.Live.Infrastructure;
+using TransVoice.Live.TextProcessing;
 
 namespace TransVoice.Live;
 
+/// <summary>
+/// Главный класс приложения. Настраивает DI-контейнер и запускает CLI-команды.
+/// </summary>
 public class Program
 {
     public static int Main(string[] args)
@@ -18,6 +22,7 @@ public class Program
         services.AddSingleton<WhisperEngine>();
         services.AddSingleton<AudioStreamer>();
         services.AddSingleton<ClipboardManager>();
+        services.AddSingleton<ITextProcessor, RussianTextProcessor>();
 
         var registrar = new TypeRegistrar(services);
         var app = new CommandApp(registrar);

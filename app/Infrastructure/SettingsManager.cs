@@ -3,6 +3,9 @@ using TransVoice.Live.Common;
 
 namespace TransVoice.Live.Infrastructure;
 
+/// <summary>
+/// Менеджер загрузки и сохранения настроек приложения в JSON-файл.
+/// </summary>
 public class SettingsManager
 {
     private readonly string _settingsPath;
