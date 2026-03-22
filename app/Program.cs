@@ -23,6 +23,8 @@ public class Program
         services.AddSingleton<AudioStreamer>();
         services.AddSingleton<ClipboardManager>();
         services.AddSingleton<ITextProcessor, RussianTextProcessor>();
+        services.AddSingleton<DependencyChecker>();
+        services.AddSingleton<ModelDownloader>();
 
         var registrar = new TypeRegistrar(services);
         var app = new CommandApp(registrar);
@@ -34,6 +36,10 @@ public class Program
             config
                 .AddCommand<SettingsCommand>("settings")
                 .WithDescription("Настройка модели, языка и потоков");
+
+            config
+                .AddCommand<SetupCommand>("setup")
+                .WithDescription("Проверка зависимостей и установка модели Whisper");
 
             config
                 .AddCommand<LiveCommand>("live")
